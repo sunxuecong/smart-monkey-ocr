@@ -33,8 +33,7 @@
         "title": "Tauri App",
         "width": 1000,
         "height": 600,
-        "dragDropEnabled": false,
-        "decorations": true
+        "dragDropEnabled": false
       }
     ]
   }
