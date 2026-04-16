@@ -21,5 +21,9 @@ tauri-plugin-process = "2.3.1"
 base64 = "0.22"
 tauri-plugin-global-shortcut = "2.3.1"
 
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+xcap = "0.7"
+image = "0.25"
+
 [features]
 custom-protocol = ["tauri/custom-protocol"]

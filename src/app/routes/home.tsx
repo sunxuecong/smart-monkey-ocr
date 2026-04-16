@@ -1,10 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Camera, Check, Copy, Keyboard, Loader2, ScanText } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import env from "@/config/env";
+
+const isMac = navigator.platform.toUpperCase().includes("MAC");
 
 export function HomePage() {
   const [screenshotSrc, setScreenshotSrc] = useState<string | null>(null);
@@ -13,48 +16,88 @@ export function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  const processOcr = useCallback(async (dataUri: string) => {
+    setScreenshotSrc(dataUri);
+    setOcrResult(null);
+    setError(null);
+    setIsLoading(true);
+
+    try {
+      const response = await fetch(env.GLM_OCR_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.GLM_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ model: "glm-ocr", file: dataUri }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      setOcrResult(data.md_results ?? "");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "OCR 调用失败");
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
   const startScreenshot = useCallback(async () => {
     const appWindow = getCurrentWindow();
+
+    if (isMac) {
+      try {
+        await appWindow.hide();
+        await new Promise((r) => setTimeout(r, 200));
+        const dataUri = await invoke<string>("screenshot_region");
+        await appWindow.show();
+        await appWindow.setFocus();
+        await processOcr(dataUri);
+      } catch {
+        await appWindow.show();
+      }
+      return;
+    }
+
+    // Windows/Linux: capture fullscreen → overlay → crop
     try {
       await appWindow.hide();
       await new Promise((r) => setTimeout(r, 200));
-      const dataUri = await invoke<string>("screenshot_region");
-      await appWindow.show();
-      await appWindow.setFocus();
+      await invoke("capture_fullscreen");
 
-      setScreenshotSrc(dataUri);
-      setOcrResult(null);
-      setError(null);
-      setIsLoading(true);
+      const overlay = new WebviewWindow("screenshot-overlay", {
+        url: "/screenshot-overlay",
+        fullscreen: true,
+        decorations: false,
+        alwaysOnTop: true,
+        focus: true,
+      });
 
-      try {
-        const response = await fetch(env.GLM_OCR_URL, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${env.GLM_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: "glm-ocr",
-            file: dataUri,
-          }),
-        });
+      const unlisten = await listen<{ data: string | null }>(
+        "screenshot-captured",
+        (event) => {
+          unlisten();
+          overlay.close();
+          appWindow.show();
+          appWindow.setFocus();
 
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
+          if (event.payload.data) {
+            processOcr(event.payload.data);
+          }
         }
+      );
 
-        const data = await response.json();
-        setOcrResult(data.md_results ?? "");
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "OCR 调用失败");
-      } finally {
-        setIsLoading(false);
-      }
+      await overlay.once("tauri://error", (e) => {
+        console.error("Overlay error:", e);
+        appWindow.show();
+      });
     } catch {
       await appWindow.show();
     }
-  }, []);
+  }, [processOcr]);
 
   useEffect(() => {
     const unlisten = listen("screenshot-shortcut", () => {
@@ -101,7 +144,6 @@ export function HomePage() {
       {/* Main Content */}
       <main className="flex min-h-0 flex-1">
         {screenshotSrc || isLoading ? (
-          /* Two Column Layout */
           <div className="flex flex-1 divide-x divide-border/50">
             {/* Left: Screenshot */}
             <div className="flex min-h-0 w-1/2 flex-col">
@@ -190,9 +232,9 @@ export function HomePage() {
                       </Button>
                     </div>
                   </div>
-                ) : ocrResult ? (
+                ) : ocrResult !== null ? (
                   <pre className="whitespace-pre-wrap break-words rounded-2xl bg-muted/50 p-5 font-mono text-sm leading-relaxed">
-                    {ocrResult}
+                    {ocrResult || "(empty)"}
                   </pre>
                 ) : (
                   <div className="flex h-full items-center justify-center">
